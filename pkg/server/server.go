@@ -243,7 +243,7 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 
 func buildSelectors(pubHash string) []string {
 	var selectors []string
-	selectors = append(selectors, "tpm:pub_hash:"+pubHash)
+	selectors = append(selectors, "pub_hash:"+pubHash)
 	return selectors
 }
 
