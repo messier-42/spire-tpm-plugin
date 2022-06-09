@@ -25,7 +25,7 @@ if [ "${#test_dirs[@]}" = "0" ]; then
 fi
 
 function cleanup() {
-  docker-compose \
+  docker compose \
     -f docker/docker-compose.yaml \
     -p spire-tpm-plugin \
     stop
@@ -33,7 +33,7 @@ function cleanup() {
 
 trap cleanup EXIT
 
-docker-compose \
+docker compose \
   -f docker/docker-compose.yaml \
   -p spire-tpm-plugin \
   start

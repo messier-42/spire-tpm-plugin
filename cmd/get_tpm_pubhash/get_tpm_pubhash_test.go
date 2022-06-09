@@ -1,13 +1,14 @@
 package main
 
 import (
-	"github.com/bloomberg/spire-tpm-plugin/pkg/common_test"
-	"github.com/stretchr/testify/require"
 	"testing"
 
+	"github.com/bloomberg/spire-tpm-plugin/pkg/common_test"
+	"github.com/stretchr/testify/require"
+
 	"github.com/google/go-attestation/attest"
+	"github.com/google/go-tpm-tools/client"
 	sim "github.com/google/go-tpm-tools/simulator"
-	"github.com/google/go-tpm-tools/tpm2tools"
 )
 
 var (
@@ -17,7 +18,7 @@ var (
 func TestFakeTPM(t *testing.T) {
 	s, err := sim.GetWithFixedSeedInsecure(0)
 	require.NoError(t, err)
-	defer tpm2tools.CheckedClose(t, s)
+	defer client.CheckedClose(t, s)
 
 	tpm, err := attest.OpenTPM(&attest.OpenConfig{
 		TPMVersion:     attest.TPMVersion20,

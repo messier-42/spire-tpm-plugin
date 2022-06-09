@@ -19,56 +19,56 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-
-	"github.com/google/go-attestation/attest"
+	"sync"
 
 	"github.com/bloomberg/spire-tpm-plugin/pkg/common"
-	gx509 "github.com/google/certificate-transparency-go/x509"
+	"github.com/google/go-attestation/attest"
 	"github.com/hashicorp/hcl"
-	spc "github.com/spiffe/spire/proto/spire/common"
-	spi "github.com/spiffe/spire/proto/spire/common/plugin"
-	"github.com/spiffe/spire/proto/spire/server/nodeattestor"
+	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-// TPMAttestorPlugin implements the nodeattestor Plugin interface
-type TPMAttestorPlugin struct {
-	config *TPMAttestorPluginConfig
-}
-
-type TPMAttestorPluginConfig struct {
+type Config struct {
 	trustDomain string
 	CaPath      string `hcl:"ca_path"`
 	HashPath    string `hcl:"hash_path"`
 }
 
-func New() *TPMAttestorPlugin {
-	return &TPMAttestorPlugin{}
+// Plugin implements the nodeattestor Plugin interface
+type Plugin struct {
+	nodeattestorv1.UnsafeNodeAttestorServer
+	configv1.UnsafeConfigServer
+	config *Config
+	m      sync.Mutex
 }
 
-func NewFromConfig(config *TPMAttestorPluginConfig) *TPMAttestorPlugin {
-	return &TPMAttestorPlugin{config: config}
+func New() *Plugin {
+	return &Plugin{}
 }
 
-func (p *TPMAttestorPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoRequest) (*spi.GetPluginInfoResponse, error) {
-	return &spi.GetPluginInfoResponse{}, nil
+func NewFromConfig(config *Config) *Plugin {
+	return &Plugin{config: config}
 }
 
-func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
-	config := &TPMAttestorPluginConfig{}
-	if err := hcl.Decode(config, req.Configuration); err != nil {
+func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	config := &Config{}
+	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
 		return nil, fmt.Errorf("failed to decode configuration file: %v", err)
 	}
 
-	if req.GlobalConfig == nil {
+	if req.CoreConfiguration == nil {
 		return nil, errors.New("global configuration is required")
 	}
-	if req.GlobalConfig.TrustDomain == "" {
+	if req.CoreConfiguration.TrustDomain == "" {
 		return nil, errors.New("trust_domain is required")
 	}
 	if config.CaPath != "" {
@@ -96,13 +96,13 @@ func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureReq
 		return nil, errors.New("either ca_path, hash_path, or both are required")
 	}
 
-	config.trustDomain = req.GlobalConfig.TrustDomain
+	config.trustDomain = req.CoreConfiguration.TrustDomain
 	p.config = config
 
-	return &spi.ConfigureResponse{}, nil
+	return &configv1.ConfigureResponse{}, nil
 }
 
-func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer) error {
+func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 	if p.config == nil {
 		return errors.New("plugin not configured")
 	}
@@ -112,13 +112,20 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 		return err
 	}
 
-	if dataType := req.AttestationData.Type; dataType != common.PluginName {
-		return fmt.Errorf("tpm: unexpected attestation data type %q", dataType)
+	conf := p.getConfiguration()
+	if conf == nil {
+		return status.Error(codes.FailedPrecondition, "tpm: not configured")
+	}
+
+	payload := req.GetPayload()
+	if payload == nil {
+		return status.Error(codes.InvalidArgument, "tpm: missing attestation payload")
 	}
 
 	attestationData := new(common.AttestationData)
-	if err := json.Unmarshal(req.AttestationData.Data, attestationData); err != nil {
-		return fmt.Errorf("tpm: failed to unmarshal attestation data: %v", err)
+	err = json.Unmarshal(payload, attestationData)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "tpm: failed to unmarshal attestation data: %v", err)
 	}
 
 	ek, err := common.DecodeEK(attestationData.EK)
@@ -128,7 +135,7 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 
 	hashEncoded, err := common.GetPubHash(ek)
 	if err != nil {
-		return fmt.Errorf("tpm: could not get public key hash: %v", err)
+		return status.Errorf(codes.InvalidArgument, "tpm: could not get public key hash: %v", err)
 	}
 
 	validEK := false
@@ -143,15 +150,15 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 	if !validEK && p.config.CaPath != "" && ek.Certificate != nil {
 		files, err := ioutil.ReadDir(p.config.CaPath)
 		if err != nil {
-			return fmt.Errorf("tpm: could not open ca directory: %v", err)
+			return status.Errorf(codes.InvalidArgument, "tpm: could not open ca directory: %v", err)
 		}
 
-		roots := gx509.NewCertPool()
+		roots := x509.NewCertPool()
 		for _, file := range files {
 			filename := filepath.Join(p.config.CaPath, file.Name())
 			certData, err := ioutil.ReadFile(filename)
 			if err != nil {
-				return fmt.Errorf("tpm: could not read cert data for '%s': %v", filename, err)
+				return status.Errorf(codes.InvalidArgument, "tpm: could not read cert data for '%s': %v", filename, err)
 			}
 
 			ok := roots.AppendCertsFromPEM(certData)
@@ -159,16 +166,16 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 				continue
 			}
 
-			root, err := gx509.ParseCertificate(certData)
+			root, err := x509.ParseCertificate(certData)
 			if err == nil {
 				roots.AddCert(root)
 				continue
 			}
 
-			return fmt.Errorf("tpm: could not parse cert data for '%s': %v", filename, err)
+			return status.Errorf(codes.InvalidArgument, "tpm: could not parse cert data for '%s': %v", filename, err)
 		}
 
-		opts := gx509.VerifyOptions{
+		opts := x509.VerifyOptions{
 			Roots: roots,
 		}
 		_, err = ek.Certificate.Verify(opts)
@@ -190,7 +197,7 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 
 	secret, ec, err := ap.Generate()
 	if err != nil {
-		return fmt.Errorf("tpm: could not generate credential challenge: %v", err)
+		return status.Errorf(codes.Internal, "tpm: could not generate credential challenge: %v", err)
 	}
 
 	challenge := &common.Challenge{
@@ -199,48 +206,49 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 
 	challengeBytes, err := json.Marshal(challenge)
 	if err != nil {
-		return fmt.Errorf("tpm: unable to marshal challenge: %v", err)
+		return status.Errorf(codes.Internal, "tpm: unable to marshal challenge: %v", err)
 	}
 
-	if err := stream.Send(&nodeattestor.AttestResponse{
-		Challenge: challengeBytes,
+	if err := stream.Send(&nodeattestorv1.AttestResponse{
+		Response: &nodeattestorv1.AttestResponse_Challenge{
+			Challenge: challengeBytes,
+		},
 	}); err != nil {
-		return fmt.Errorf("tpm: unable to send challenge: %v", err)
+		return status.Errorf(status.Code(err), "tpm: unable to send challenge: %v", err)
 	}
 
 	challengeResp, err := stream.Recv()
 	if err != nil {
-		return fmt.Errorf("tpm: unable to receive challenge response: %v", err)
+		return status.Errorf(status.Code(err), "tpm: unable to receive challenge response: %v", err)
 	}
 
-	response := new(common.ChallengeResponse)
-	if err := json.Unmarshal(challengeResp.Response, response); err != nil {
-		return fmt.Errorf("tpm: unable to unmarshal challenge response: %v", err)
+	response := &common.ChallengeResponse{}
+	if err := json.Unmarshal(challengeResp.GetChallengeResponse(), response); err != nil {
+		return status.Errorf(codes.InvalidArgument, "tpm: unable to unmarshal challenge response: %v", err)
 	}
 
 	if !bytes.Equal(secret, response.Secret) {
-		return fmt.Errorf("tpm: incorrect secret from attestor")
+		return status.Errorf(codes.PermissionDenied, "tpm: incorrect secret from attestor")
 	}
 
-	return stream.Send(&nodeattestor.AttestResponse{
-		AgentId:   common.AgentID(p.config.trustDomain, hashEncoded),
-		Selectors: buildSelectors(hashEncoded),
+	return stream.Send(&nodeattestorv1.AttestResponse{
+		Response: &nodeattestorv1.AttestResponse_AgentAttributes{
+			AgentAttributes: &nodeattestorv1.AgentAttributes{
+				SpiffeId:       common.AgentID(p.config.trustDomain, hashEncoded),
+				SelectorValues: buildSelectors(hashEncoded),
+			},
+		},
 	})
 }
 
-func buildSelectors(pubHash string) []*spc.Selector {
-	selectors := []*spc.Selector{}
-	selectors = append(selectors, &spc.Selector{
-		Type: "tpm", Value: "pub_hash:" + pubHash,
-	})
+func buildSelectors(pubHash string) []string {
+	var selectors []string
+	selectors = append(selectors, "pub_hash:"+pubHash)
 	return selectors
 }
 
-func containsKey(keys []string, key string) bool {
-	for _, item := range keys {
-		if item == key {
-			return true
-		}
-	}
-	return false
+func (p *Plugin) getConfiguration() *Config {
+	p.m.Lock()
+	defer p.m.Unlock()
+	return p.config
 }

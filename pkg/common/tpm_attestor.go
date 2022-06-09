@@ -18,13 +18,13 @@ package common
 
 import (
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
-	"github.com/google/certificate-transparency-go/x509"
 	"github.com/google/go-attestation/attest"
 )
 

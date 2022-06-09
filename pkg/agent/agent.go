@@ -21,107 +21,118 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+
 	"github.com/google/go-attestation/attest"
+	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/nodeattestor/v1"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/hashicorp/hcl"
-	"github.com/spiffe/spire/proto/spire/agent/nodeattestor"
-	spc "github.com/spiffe/spire/proto/spire/common"
-	spi "github.com/spiffe/spire/proto/spire/common/plugin"
 
 	"github.com/bloomberg/spire-tpm-plugin/pkg/common"
 )
 
-// TPMAttestorPlugin implements the nodeattestor Plugin interface
-type TPMAttestorPlugin struct {
-	config *TPMAttestorPluginConfig
+// Plugin implements the nodeattestor Plugin interface
+type Plugin struct {
+	nodeattestorv1.UnsafeNodeAttestorServer
+	configv1.UnsafeConfigServer
+	config *Config
 	tpm    *attest.TPM
+	m      sync.Mutex
 }
 
-type TPMAttestorPluginConfig struct {
+type Config struct {
 	trustDomain string
 }
 
-func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
-	config := &TPMAttestorPluginConfig{}
-	if err := hcl.Decode(config, req.Configuration); err != nil {
-		return nil, fmt.Errorf("failed to decode configuration file: %v", err)
+func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	config := &Config{}
+	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to decode configuration file: %v", err)
 	}
 
-	if req.GlobalConfig == nil {
-		return nil, errors.New("global configuration is required")
+	if req.CoreConfiguration == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "global configuration is required")
 	}
-	if req.GlobalConfig.TrustDomain == "" {
-		return nil, errors.New("trust_domain is required")
+	if req.CoreConfiguration.TrustDomain == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "trust_domain is required")
 	}
 
-	config.trustDomain = req.GlobalConfig.TrustDomain
+	p.m.Lock()
+	defer p.m.Unlock()
+
+	config.trustDomain = req.CoreConfiguration.TrustDomain
 	p.config = config
 
-	return &spi.ConfigureResponse{}, nil
+	return &configv1.ConfigureResponse{}, nil
 }
 
-func New() *TPMAttestorPlugin {
-	return &TPMAttestorPlugin{}
+func New() *Plugin {
+	return &Plugin{}
 }
 
-func (p *TPMAttestorPlugin) FetchAttestationData(stream nodeattestor.NodeAttestor_FetchAttestationDataServer) error {
-	if p.config == nil {
-		return errors.New("tpm: plugin not configured")
+func (p *Plugin) AidAttestation(stream nodeattestorv1.NodeAttestor_AidAttestationServer) error {
+	conf := p.getConfig()
+	if conf == nil {
+		return status.Error(codes.FailedPrecondition, "plugin not configured")
 	}
 
 	attestationData, aik, err := p.generateAttestationData()
 	if err != nil {
-		return fmt.Errorf("tpm: failed to generate attestation data: %v", err)
+		return status.Errorf(codes.Internal, "failed to generate attestation data: %v", err)
 	}
 
 	attestationDataBytes, err := json.Marshal(attestationData)
 	if err != nil {
-		return fmt.Errorf("tpm: failed to marshal attestation data to json: %v", err)
+		return status.Errorf(codes.Internal, "failed to marshal attestation data to json: %v", err)
 	}
 
-	if err := stream.Send(&nodeattestor.FetchAttestationDataResponse{
-		AttestationData: &spc.AttestationData{
-			Type: common.PluginName,
-			Data: attestationDataBytes,
+	err = stream.Send(&nodeattestorv1.PayloadOrChallengeResponse{
+		Data: &nodeattestorv1.PayloadOrChallengeResponse_Payload{
+			Payload: attestationDataBytes,
 		},
-	}); err != nil {
-		return fmt.Errorf("tpm: failed to send attestation data: %v", err)
+	})
+
+	if err != nil {
+		return status.Errorf(status.Code(err), "failed to send attestation data: %v", err)
 	}
 
 	resp, err := stream.Recv()
 	if err != nil {
-		return fmt.Errorf("tpm: failed to receive challenge: %v", err)
+		return status.Errorf(status.Code(err), "failed to receive challenge: %v", err)
 	}
 
 	challenge := new(common.Challenge)
 	if err := json.Unmarshal(resp.Challenge, challenge); err != nil {
-		return fmt.Errorf("tpm: failed to unmarshal challenge: %v", err)
+		return status.Errorf(codes.InvalidArgument, "failed to unmarshal challenge: %v", err)
 	}
 
 	response, err := p.calculateResponse(challenge.EC, aik)
 	if err != nil {
-		return fmt.Errorf("tpm: failed to calculate response: %v", err)
+		return status.Errorf(codes.InvalidArgument, "failed to calculate response: %v", err)
 	}
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
-		return fmt.Errorf("tpm: unable to marshal challenge response: %v", err)
+		return status.Errorf(codes.InvalidArgument, "unable to marshal challenge response: %v", err)
 	}
 
-	if err := stream.Send(&nodeattestor.FetchAttestationDataResponse{
-		Response: responseBytes,
-	}); err != nil {
-		return fmt.Errorf("tpm: unable to send challenge response: %v", err)
+	err = stream.Send(&nodeattestorv1.PayloadOrChallengeResponse{
+		Data: &nodeattestorv1.PayloadOrChallengeResponse_ChallengeResponse{
+			ChallengeResponse: responseBytes,
+		},
+	})
+
+	if err != nil {
+		return status.Errorf(status.Code(err), "unable to send challenge response: %v", err)
 	}
 
 	return nil
 }
 
-func (p *TPMAttestorPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoRequest) (*spi.GetPluginInfoResponse, error) {
-	return &spi.GetPluginInfoResponse{}, nil
-}
-
-func (p *TPMAttestorPlugin) calculateResponse(ec *attest.EncryptedCredential, aikBytes []byte) (*common.ChallengeResponse, error) {
+func (p *Plugin) calculateResponse(ec *attest.EncryptedCredential, aikBytes []byte) (*common.ChallengeResponse, error) {
 	tpm := p.tpm
 	if tpm == nil {
 		var err error
@@ -149,7 +160,7 @@ func (p *TPMAttestorPlugin) calculateResponse(ec *attest.EncryptedCredential, ai
 	}, nil
 }
 
-func (p *TPMAttestorPlugin) generateAttestationData() (*common.AttestationData, []byte, error) {
+func (p *Plugin) generateAttestationData() (*common.AttestationData, []byte, error) {
 	tpm := p.tpm
 	if tpm == nil {
 		var err error
@@ -192,4 +203,10 @@ func (p *TPMAttestorPlugin) generateAttestationData() (*common.AttestationData, 
 		EK: ekBytes,
 		AK: &params,
 	}, aikBytes, nil
+}
+
+func (p *Plugin) getConfig() *Config {
+	p.m.Lock()
+	defer p.m.Unlock()
+	return p.config
 }
