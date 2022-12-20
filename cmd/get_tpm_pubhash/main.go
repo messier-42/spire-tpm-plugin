@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/bloomberg/spire-tpm-plugin/pkg/common"
 	"github.com/google/go-attestation/attest"
@@ -37,6 +38,12 @@ func main() {
 	tpmPubHash, err := getTpmPubHash(tpm)
 	if err != nil {
 		log.Fatalln(err)
+	}
+	if nArgs := len(os.Args[1:]); nArgs > 0 && os.Args[1] == "--verbose" {
+		if err = printTpmVerboseDetails(tpm); err != nil {
+			log.Fatalln(err)
+		}
+
 	}
 	fmt.Println(tpmPubHash)
 }
@@ -58,4 +65,20 @@ func getTpmPubHash(tpm *attest.TPM) (string, error) {
 	}
 
 	return hashEncoded, nil
+}
+
+func printTpmVerboseDetails(tpm *attest.TPM) error {
+	eks, err := tpm.EKs()
+	if err != nil {
+		return err
+	}
+
+	for i, ek := range eks {
+		b, e := common.EncodeEK(&ek)
+		if e == nil {
+			fmt.Printf("EndorsementKey[%d]:\n%v\n", i, string(b))
+		}
+
+	}
+	return nil
 }
