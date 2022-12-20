@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,6 +102,7 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 }
 
 func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
+
 	if p.config == nil {
 		return errors.New("plugin not configured")
 	}
@@ -148,31 +148,33 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 	}
 
 	if !validEK && p.config.CaPath != "" && ek.Certificate != nil {
-		files, err := ioutil.ReadDir(p.config.CaPath)
+		files, err := os.ReadDir(p.config.CaPath)
 		if err != nil {
 			return status.Errorf(codes.InvalidArgument, "tpm: could not open ca directory: %v", err)
 		}
 
 		roots := x509.NewCertPool()
 		for _, file := range files {
-			filename := filepath.Join(p.config.CaPath, file.Name())
-			certData, err := ioutil.ReadFile(filename)
-			if err != nil {
-				return status.Errorf(codes.InvalidArgument, "tpm: could not read cert data for '%s': %v", filename, err)
-			}
+			if !file.IsDir() {
+				filename := filepath.Join(p.config.CaPath, file.Name())
+				certData, err := os.ReadFile(filename)
+				if err != nil {
+					return status.Errorf(codes.InvalidArgument, "tpm: could not read cert data for '%s': %v", filename, err)
+				}
 
-			ok := roots.AppendCertsFromPEM(certData)
-			if ok {
-				continue
-			}
+				ok := roots.AppendCertsFromPEM(certData)
+				if ok {
+					continue
+				}
 
-			root, err := x509.ParseCertificate(certData)
-			if err == nil {
-				roots.AddCert(root)
-				continue
-			}
+				root, err := x509.ParseCertificate(certData)
+				if err == nil {
+					roots.AddCert(root)
+					continue
+				}
 
-			return status.Errorf(codes.InvalidArgument, "tpm: could not parse cert data for '%s': %v", filename, err)
+				return status.Errorf(codes.InvalidArgument, "tpm: could not parse cert data for '%s': %v", filename, err)
+			}
 		}
 
 		opts := x509.VerifyOptions{
