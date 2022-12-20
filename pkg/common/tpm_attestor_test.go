@@ -16,7 +16,11 @@ func TestEncodeDecode(t *testing.T) {
 		{
 			name:    "certificate",
 			hasCert: true,
-			pemBytes: []byte(`-----BEGIN CERTIFICATE-----
+			pemBytes: []byte(`-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7mnx2ikpijr+7wbh/S67NKPeU7yE
+6IDPKOOrt7W15Xs+O2aW2xMNKCCaC2QAMnDuXKogKnOr7Ri0firFrSlGIg==
+-----END PUBLIC KEY-----
+-----BEGIN CERTIFICATE-----
 MIIDATCCAekCAQEwDQYJKoZIhvcNAQELBQAwQzELMAkGA1UEBhMCVVMxCzAJBgNV
 BAgMAk5DMQwwCgYDVQQHDANSVFAxDDAKBgNVBAoMA2FwcDELMAkGA1UEAwwCY2Ew
 HhcNMjAwNTE0MjAxODEzWhcNMzAwNTEyMjAxODEzWjBKMQswCQYDVQQGEwJVUzEL
@@ -35,7 +39,7 @@ ASWkXRbZ0wBbY1TWmDEuSBVSRyfS3v/BmjMfAEjzZ/+BshnWQSBh2+W78kNRfcvS
 09/II3+mWolAcYX7Z0O5gqTAl6vKuWKekuaF1cQR5kNy9nZqdSWywLaXFPryqrjS
 fcSRqGI=
 -----END CERTIFICATE-----`),
-			pubHash: "e56864680c748f0318e1c7cbc24aeb2259f59c4bf11c2ed3b778e0329db209d0",
+			pubHash: "d6c53c09ab792f1ea72d2ed52d7c9e587b1934489f7cde87d716e03f9fbda770",
 		},
 		{
 			name: "ec public key",

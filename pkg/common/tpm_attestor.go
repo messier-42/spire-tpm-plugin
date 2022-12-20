@@ -17,6 +17,7 @@
 package common
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
@@ -69,11 +70,11 @@ func GetPubHash(ek *attest.EK) (string, error) {
 }
 
 func EncodeEK(ek *attest.EK) ([]byte, error) {
+	var buf bytes.Buffer
 	if ek.Certificate != nil {
-		return pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: ek.Certificate.Raw,
-		}), nil
+		if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: ek.Certificate.Raw}); err != nil {
+			return nil, err
+		}
 	}
 
 	data, err := pubBytes(ek)
@@ -81,48 +82,61 @@ func EncodeEK(ek *attest.EK) ([]byte, error) {
 		return nil, err
 	}
 
-	return pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: data,
-	}), nil
+	if err := pem.Encode(&buf, &pem.Block{Type: "PUBLIC KEY", Bytes: data}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func pubBytes(ek *attest.EK) ([]byte, error) {
 	data, err := x509.MarshalPKIXPublicKey(ek.Public)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling ec public key: %v", err)
+		return nil, fmt.Errorf("error marshaling EKPub key: %v", err)
 	}
 	return data, nil
 }
 
 func DecodeEK(pemBytes []byte) (*attest.EK, error) {
-	block, _ := pem.Decode(pemBytes)
+	blockOne, rest := pem.Decode(pemBytes)
 
-	if block == nil {
+	if blockOne == nil {
 		return nil, errors.New("invalid pemBytes")
 	}
 
-	switch block.Type {
-	case "CERTIFICATE":
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing certificate: %v", err)
-		}
-		return &attest.EK{
-			Certificate: cert,
-			Public:      cert.PublicKey,
-		}, nil
-
-	case "PUBLIC KEY":
-		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing ecdsa public key: %v", err)
-		}
-
-		return &attest.EK{
-			Public: pub,
-		}, nil
+	ek := &attest.EK{}
+	if err := decodeEKBlock(blockOne, ek); err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("invalid pem type: %s", block.Type)
+	if rest != nil {
+		if blockTwo, _ := pem.Decode(rest); blockTwo != nil {
+			if err := decodeEKBlock(blockTwo, ek); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return ek, nil
+}
+
+func decodeEKBlock(b *pem.Block, ek *attest.EK) error {
+	switch b.Type {
+	case "CERTIFICATE":
+		cert, err := x509.ParseCertificate(b.Bytes)
+		if err != nil {
+			return fmt.Errorf("error parsing EKCert: %v", err)
+		}
+		ek.Certificate = cert
+		return nil
+
+	case "PUBLIC KEY":
+		pub, err := x509.ParsePKIXPublicKey(b.Bytes)
+		if err != nil {
+			return fmt.Errorf("error parsing EKPub key: %v", err)
+		}
+		ek.Public = pub
+		return nil
+	}
+
+	return fmt.Errorf("invalid pem type: %s", b.Type)
 }
