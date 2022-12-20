@@ -1,4 +1,4 @@
-FROM --platform=${BUILDPLATFORM} golang:1.16.4-alpine3.13 as build
+FROM --platform=${BUILDPLATFORM} golang:1.19.4-alpine3.17 as build
 
 ARG BINARY
 ARG TARGETOS
@@ -14,7 +14,7 @@ COPY . .
 
 RUN TARGETOS=${TARGETOS} TARGETARCH=${TARGETARCH} BINARY=${BINARY} make docker-build
 
-FROM --platform=${TARGETPLATFORM} alpine:3.13
+FROM --platform=${TARGETPLATFORM} alpine:3.17
 
 WORKDIR /app
 
