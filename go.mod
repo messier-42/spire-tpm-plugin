@@ -6,7 +6,7 @@ require (
 	github.com/google/go-attestation v0.4.4-0.20220404204839-8820d49b18d9
 	github.com/google/go-tpm-tools v0.3.8
 	github.com/hashicorp/hcl v1.0.1-0.20190430135223-99e2f22d1c94
-	github.com/spiffe/spire-plugin-sdk v1.6.4
+	github.com/spiffe/spire-plugin-sdk v1.7.0
 	github.com/stretchr/testify v1.7.1
 	google.golang.org/grpc v1.55.0
 )
