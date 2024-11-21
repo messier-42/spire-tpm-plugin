@@ -1,4 +1,4 @@
-# SPIRE TPM Plugin
+# QHx TPM Plugin
 
 This repository contains agent and server plugins for [SPIRE](https://github.com/spiffe/spire) to allow TPM 2-based node attestation.
 
@@ -7,10 +7,6 @@ This repository contains agent and server plugins for [SPIRE](https://github.com
 - [Quick start](#quick-start)
 - [How it Works](#how-it-works)
 - [Building](#building)
-- [Contributions](#contributions)
-- [License](#license)
-- [Code of Conduct](#code-of-conduct)
-- [Security Vulnerability Reporting](#security-vulnerability-reporting)
 
 ## Demo
 
